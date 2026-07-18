@@ -33,7 +33,6 @@ MAX_LEVERAGE = 1.0                    # no leverage for now
 # --- Data ------------------------------------------------------------
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 PRICE_CACHE_FILE = os.path.join(DATA_DIR, "prices.csv")
-CACHE_MAX_AGE_DAYS = 1
 
 # --- Reporting ------------------------------------------------------
 BENCHMARK_TICKER = "SPY"

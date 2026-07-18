@@ -3,8 +3,12 @@
 Supports three ways of getting price data, in order of preference:
   1. An explicit manual CSV path (e.g. a file you downloaded on a machine
      with real internet access and uploaded here).
-  2. A fresh local cache at cfg.PRICE_CACHE_FILE.
-  3. A live yfinance download, which is also written to the cache.
+  2. The local CSV at cfg.PRICE_CACHE_FILE (data/prices.csv), loaded
+     directly whenever it exists -- no live download is attempted while
+     a local copy is available.
+  3. A live yfinance download (only when no local CSV exists yet, or
+     force_refresh=True is passed explicitly), which is also written to
+     the cache.
 
 If a live download isn't possible (e.g. this sandbox's network policy
 blocks Yahoo Finance) and no cache exists yet, load_prices raises a
@@ -12,19 +16,11 @@ clear error pointing at download_data.py instead of failing silently.
 """
 
 import os
-import time
 
 import pandas as pd
 import yfinance as yf
 
 import config
-
-
-def _cache_is_fresh(path, max_age_days):
-    if not os.path.exists(path):
-        return False
-    age_seconds = time.time() - os.path.getmtime(path)
-    return age_seconds < max_age_days * 86400
 
 
 def _download_prices(tickers, start, end):
@@ -93,9 +89,9 @@ def load_prices(cfg=config, force_refresh=False, manual_csv_path=None):
 
     - If manual_csv_path is given, it is loaded directly and promoted to
       the cache (useful for a CSV downloaded elsewhere and uploaded here).
-    - Otherwise, data/prices.csv is used as a cache and only refreshed
-      via yfinance when missing, stale (older than
-      cfg.CACHE_MAX_AGE_DAYS), or force_refresh is set.
+    - Otherwise, data/prices.csv is loaded directly whenever it exists --
+      no live download is attempted while a local copy is available.
+      Pass force_refresh=True to force a fresh yfinance download instead.
     - If a live download fails (e.g. network access is blocked) but a
       cache already exists, that cache is used as a fallback instead of
       raising.
@@ -109,7 +105,7 @@ def load_prices(cfg=config, force_refresh=False, manual_csv_path=None):
         prices.to_csv(cache_path)
         return prices
 
-    if not force_refresh and _cache_is_fresh(cache_path, cfg.CACHE_MAX_AGE_DAYS):
+    if not force_refresh and os.path.exists(cache_path):
         prices = _clean(_read_csv(cache_path))
         _validate_tickers(prices, cfg.TICKERS)
         return prices
