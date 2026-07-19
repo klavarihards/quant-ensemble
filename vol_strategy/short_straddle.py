@@ -44,19 +44,35 @@ MAX_LOSS_PCT_OF_CAPITAL = 0.05   # size so the 3-sigma scenario loss <= this fra
 SIGMA_MULTIPLE = 3.0
 RISK_FREE_RATE = DEFAULT_RISK_FREE_RATE
 MIN_T_YEARS = 1.0 / 365.0        # floor to keep Black-Scholes well-defined
+MIN_CONTRACTS = 1                # never go fully idle just because sizing rounds to 0
+MAX_CONTRACTS = 20               # concentration cap
 
 
 def _estimate_num_contracts(S, K, sigma, T, premium_per_contract, capital,
                              multiplier=OPTION_MULTIPLIER, sigma_multiple=SIGMA_MULTIPLE,
-                             max_loss_pct=MAX_LOSS_PCT_OF_CAPITAL):
+                             max_loss_pct=MAX_LOSS_PCT_OF_CAPITAL,
+                             min_contracts=MIN_CONTRACTS, max_contracts=MAX_CONTRACTS):
     """Size the straddle from a 3-sigma adverse-move scenario.
 
     Short options have unlimited theoretical loss, so "maximum
     theoretical loss" is approximated here as the expiry intrinsic
     value if SPY moves +/- sigma_multiple standard deviations (a GBM
     approximation: S * sigma * sqrt(T)) by expiry, net of premium
-    collected -- the worse of the up-move and down-move scenarios.
+    collected -- the worse of the up-move and down-move scenarios. This
+    scales with S automatically (both the move and the strike grow with
+    the underlying), so as SPY's price rises the risk-per-contract
+    estimate rises right along with it -- the previous version's
+    shrink-to-1-contract behavior came from capital not compounding fast
+    enough to keep pace with that growth, not from the formula being
+    static.
+
+    min_contracts enforces a floor so the strategy is never fully idle
+    purely because of a sizing rounding to 0 (this can push realised
+    risk above max_loss_pct in extreme cases -- flagged, not hidden).
+    max_contracts caps concentration risk regardless of capital size.
     """
+    if capital <= 0:
+        return 0
     move = S * sigma * math.sqrt(T) * sigma_multiple
     loss_up = max((S + move) - K, 0.0) * multiplier
     loss_down = max(K - (S - move), 0.0) * multiplier
@@ -64,11 +80,17 @@ def _estimate_num_contracts(S, K, sigma, T, premium_per_contract, capital,
     loss_per_contract = worst_case_intrinsic - premium_per_contract * multiplier
     loss_per_contract = max(loss_per_contract, 0.01 * S * multiplier)  # numerical floor
     budget = capital * max_loss_pct
-    return max(int(budget // loss_per_contract), 0)
+    sized = int(budget // loss_per_contract)
+    return int(np.clip(sized, min_contracts, max_contracts))
 
 
-def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE):
+def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
+                  max_loss_pct=MAX_LOSS_PCT_OF_CAPITAL):
     """Run the full day-by-day simulation.
+
+    capital compounds: each new month's position is sized off the
+    running equity (capital_base plus/minus every prior month's
+    realised P&L), not the fixed starting amount.
 
     Returns (trades_df, daily_df): trades_df has one row per calendar
     month (traded or skipped); daily_df has one row per trading day
@@ -108,10 +130,13 @@ def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE):
                     premium_per_contract = call0 + put0
 
                     num_contracts = _estimate_num_contracts(S_t, K, sigma_t, T0,
-                                                             premium_per_contract, equity)
+                                                             premium_per_contract, equity,
+                                                             max_loss_pct=max_loss_pct)
                     if num_contracts <= 0:
+                        # Only possible if equity has been wiped out (<= 0);
+                        # the MIN_CONTRACTS floor otherwise guarantees >= 1.
                         trades.append(dict(entry_date=t, skipped=True,
-                                            reason="position size rounded to 0",
+                                            reason="capital exhausted",
                                             vix_entry=vix_t))
                     else:
                         premium_collected_total = premium_per_contract * OPTION_MULTIPLIER * num_contracts
@@ -239,7 +264,49 @@ def summarize(trades_df, daily_df, spy_prices, capital_base=CAPITAL_BASE):
         fmt = "{:.2%}" if key != "Sharpe Ratio" else "{:.3f}"
         print(f"{key:<22}{fmt.format(metrics[key]):>14}{fmt.format(spy_metrics[key]):>14}")
 
+    print()
+    print("Average contracts per month by year (confirms sizing keeps pace with SPY's price growth):")
+    by_year = traded.groupby(traded["entry_date"].dt.year)["num_contracts"].mean()
+    print(by_year.to_string())
+
     return metrics, spy_metrics
+
+
+def run_variant_comparison(df=None, risk_levels=(0.05, 0.10), capital_base=CAPITAL_BASE):
+    """Run the backtest at each risk_levels max_loss_pct and compare."""
+    if df is None:
+        df = load_or_build()
+
+    results = {}
+    for pct in risk_levels:
+        trades, daily = run_backtest(df, capital_base=capital_base, max_loss_pct=pct)
+        metrics = compute_metrics(daily["return"], f"{pct:.0%} risk")
+        results[pct] = dict(trades=trades, daily=daily, metrics=metrics)
+
+    spy_ret = df["SPY"].pct_change().fillna(0.0)
+    spy_metrics = compute_metrics(spy_ret, "SPY Buy & Hold")
+
+    print("=== Risk-budget comparison ===")
+    header = f"{'Metric':<22}" + "".join(f"{pct:>16.0%} risk" for pct in risk_levels) + f"{'SPY B&H':>16}"
+    print(header)
+    for key in ["Total Return", "Annualised Return", "Annualised Vol", "Sharpe Ratio", "Max Drawdown"]:
+        fmt = "{:.2%}" if key != "Sharpe Ratio" else "{:.3f}"
+        row = f"{key:<22}"
+        for pct in risk_levels:
+            row += f"{fmt.format(results[pct]['metrics'][key]):>21}"
+        row += f"{fmt.format(spy_metrics[key]):>16}"
+        print(row)
+
+    print()
+    for pct in risk_levels:
+        traded = results[pct]["trades"]
+        traded = traded[~traded["skipped"]]
+        by_year = traded.groupby(traded["entry_date"].dt.year)["num_contracts"].mean()
+        print(f"--- Avg contracts/month by year, {pct:.0%} risk budget ---")
+        print(by_year.to_string())
+        print()
+
+    return results, spy_metrics
 
 
 if __name__ == "__main__":
