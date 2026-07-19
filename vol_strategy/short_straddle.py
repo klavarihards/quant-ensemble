@@ -99,12 +99,25 @@ def _estimate_num_contracts(S, K, sigma, T, premium_per_contract, capital,
 
 
 def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
-                  max_loss_pct=MAX_LOSS_PCT_OF_CAPITAL):
+                  max_loss_pct=MAX_LOSS_PCT_OF_CAPITAL, leverage=1.0):
     """Run the full day-by-day simulation.
 
     capital compounds: each new month's position is sized off the
     running equity (capital_base plus/minus every prior month's
     realised P&L), not the fixed starting amount.
+
+    leverage scales the already-sized position (contracts and hedge
+    shares alike, after the normal risk-budget sizing and its min/max
+    contract bounds) by a constant multiplier, e.g. leverage=2 trades
+    exactly twice the contracts the 12.5%-risk sizing would have chosen
+    on its own. Because equity still compounds from the resulting
+    (levered) daily P&L, and next month's sizing is based off that
+    compounded equity, leverage is not a pure post-hoc rescaling of the
+    unlevered return series -- a big levered loss shrinks the capital
+    base more, which shrinks subsequent months' sizing too. leverage may
+    be fractional (continuous), which lets a binary search target a
+    specific max-drawdown level without being restricted to integer
+    multiples; real trading would round to whole contracts.
 
     Returns (trades_df, daily_df): trades_df has one row per calendar
     month (traded or skipped); daily_df has one row per trading day
@@ -153,6 +166,7 @@ def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
                                             reason="capital exhausted",
                                             vix_entry=vix_t))
                     else:
+                        num_contracts = num_contracts * leverage
                         premium_collected_total = premium_per_contract * OPTION_MULTIPLIER * num_contracts
                         call_delta = compute_greeks(S_t, K, T0, r, sigma_t, "call")["delta"]
                         put_delta = compute_greeks(S_t, K, T0, r, sigma_t, "put")["delta"]
