@@ -59,16 +59,23 @@ class PairsEngine:
 
         for i in range(n):
             z = z_vals[i]
+            h = h_vals[i]
             if not np.isnan(z):
                 if state == 0:
-                    if z > cfg.ENTRY_THRESHOLD:
-                        state = -1  # spread too high: short A, long B
-                        current_hedge = h_vals[i]
-                        trade_counter += 1
-                    elif z < -cfg.ENTRY_THRESHOLD:
-                        state = 1  # spread too low: long A, short B
-                        current_hedge = h_vals[i]
-                        trade_counter += 1
+                    # A non-positive hedge ratio means the rolling OLS
+                    # estimate has broken down (the two assets no longer
+                    # look positively related over the lookback window),
+                    # so there is no valid dollar-neutral trade to open
+                    # today even if the z-score looks extreme.
+                    if not np.isnan(h) and h > 0:
+                        if z > cfg.ENTRY_THRESHOLD:
+                            state = -1  # spread too high: short A, long B
+                            current_hedge = h
+                            trade_counter += 1
+                        elif z < -cfg.ENTRY_THRESHOLD:
+                            state = 1  # spread too low: long A, short B
+                            current_hedge = h
+                            trade_counter += 1
                 elif abs(z) < cfg.EXIT_THRESHOLD:
                     state = 0
                     current_hedge = np.nan
