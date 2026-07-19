@@ -23,7 +23,8 @@ class Backtester:
         cfg = self.config
 
         self.prices = load_prices(cfg)
-        pairs = getattr(cfg, "ALL_PAIRS", cfg.PAIRS)
+        use_expanded = getattr(cfg, "USE_EXPANDED_UNIVERSE", False)
+        pairs = getattr(cfg, "ALL_PAIRS", cfg.PAIRS) if use_expanded else cfg.PAIRS
         self.pair_returns = run_all_pairs(self.prices, cfg, pairs=pairs)
 
         self.portfolio = Portfolio(self.pair_returns, cfg)

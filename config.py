@@ -15,12 +15,21 @@ PAIRS = [
 ]
 
 # Expanded opportunity set: commodity, international, sector and fixed-
-# income pairs added to test whether more (and more diverse) pairs can
-# push combined Sharpe further. These are new and unvalidated, so they
-# run with a walk-forward cointegration pre-filter (only trade while a
-# monthly ADF test on the trailing spread shows p < 0.05) and a looser,
-# untuned entry/exit (2.5 / 1.0) rather than the 5-pair-validated 3.0 /
-# 0.25 -- see PAIR_OVERRIDES below.
+# income pairs, tested to see whether more (and more diverse) pairs push
+# combined Sharpe further. Result: they don't. Per-pair holdout Sharpe
+# (2010-2015 / 2016-2020 / 2021-2026) showed only DBA/MOO robust in all
+# three periods; EFA/EEM, FXE/FXB, XLK/XLV, XLF/XLU, XLY/XLP, LQD/HYG,
+# and TIP/IEF were negative in every one of them (real signal, not
+# noise); USO/XLE and GLD/SLV were inconsistent (one negative period
+# each). Blending all 10 into the trailing-Sharpe-tilted portfolio
+# collapsed combined Sharpe from 0.629 to -0.004 -- and even adding just
+# the single robust pair (DBA/MOO) alone still made it worse (0.629 ->
+# 0.477 at the best-tested trailing window), because the tilt's noisy
+# month-to-month estimate has more chances to misallocate capital away
+# from the original 5's proven performers as more candidates compete for
+# weight. Kept here for reproducibility/experimentation
+# (USE_EXPANDED_UNIVERSE below), but not used by default -- the
+# validated 5-pair PAIRS remains the better production configuration.
 NEW_PAIRS = [
     ("USO", "XLE"),   # oil price vs energy stocks
     ("GLD", "SLV"),   # gold vs silver
@@ -36,6 +45,11 @@ NEW_PAIRS = [
 
 ALL_PAIRS = PAIRS + NEW_PAIRS
 TICKERS = sorted({ticker for pair in ALL_PAIRS for ticker in pair})
+
+# Set True to trade ALL_PAIRS (5 validated + 10 experimental) instead of
+# just the validated 5. Off by default -- see the finding documented
+# above NEW_PAIRS.
+USE_EXPANDED_UNIVERSE = False
 
 PAIR_OVERRIDES = {
     pair: {
