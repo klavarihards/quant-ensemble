@@ -82,6 +82,27 @@ ZSCORE_WINDOW = 15        # trading days for the spread's rolling mean & std
 ENTRY_THRESHOLD = 3.0     # enter when |z| exceeds this
 EXIT_THRESHOLD = 0.25     # exit when |z| falls back below this (min hold permitting)
 MIN_HOLDING_DAYS = 5      # do not evaluate the exit condition before this many days
+
+# Three further improvements were tested on these 5 pairs and rejected,
+# each in isolation against this exact baseline:
+#   - Kalman filter hedge ratio (pykalman, continuously re-estimated,
+#     not frozen at entry): combined Sharpe 0.629 -> -0.335. Removing
+#     the entry freeze reopens exactly the whipsaw risk it was added to
+#     prevent -- the hedge drifting mid-trade works against the position.
+#   - RSI(14) confirmation (RSI(A)<40 & RSI(B)>60, or mirrored, entry
+#     loosened to 2.5): combined Sharpe 0.629 -> 0.280, but on only 3
+#     total trades across all 5 pairs over 16 years (2 of 5 pairs never
+#     traded at all) -- the joint condition with a 15-day z-score is
+#     almost always empty (out of ~65-100 candidate extreme-z days per
+#     pair, only 0-4 also satisfy the RSI condition), so this "result"
+#     isn't statistically meaningful either way.
+#   - OU half-life filter (-log(2)/log(AR(1) coefficient), walk-forward
+#     monthly re-estimate, gate open only while half-life < 30 days):
+#     combined Sharpe 0.629 -> 0.589, roughly neutral-to-slightly-worse
+#     -- the existing entry/exit thresholds already implicitly select
+#     for fast mean reversion, so this mostly adds noise from imprecise
+#     half-life estimates rather than new information.
+# None improved on the baseline, so none are wired into PairsEngine.
 TRANSACTION_COST = 0.001  # 0.1% of notional, charged on entry and exit only
 
 # --- Capital & risk -------------------------------------------------------
