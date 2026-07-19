@@ -140,6 +140,14 @@ def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
         vix_t = float(df.loc[t, "VIX"])
         sigma_t = vix_t / 100.0
         daily_pnl = 0.0
+        # Pre-hedge option position exposure, for visualization only (not
+        # used in P&L accounting): the raw delta/gamma of the short
+        # straddle before today's hedge trade. Delta is hedged to ~0 by
+        # construction; gamma never is -- it's the actual unhedged risk.
+        position_delta = 0.0
+        position_gamma = 0.0
+        shares_traded = 0.0
+        active_contracts = 0.0
 
         if state is None:
             if t in month_start_dates:
@@ -168,9 +176,15 @@ def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
                     else:
                         num_contracts = num_contracts * leverage
                         premium_collected_total = premium_per_contract * OPTION_MULTIPLIER * num_contracts
-                        call_delta = compute_greeks(S_t, K, T0, r, sigma_t, "call")["delta"]
-                        put_delta = compute_greeks(S_t, K, T0, r, sigma_t, "put")["delta"]
+                        call_greeks = compute_greeks(S_t, K, T0, r, sigma_t, "call")
+                        put_greeks = compute_greeks(S_t, K, T0, r, sigma_t, "put")
+                        call_delta, put_delta = call_greeks["delta"], put_greeks["delta"]
                         target_shares = (call_delta + put_delta) * OPTION_MULTIPLIER * num_contracts
+
+                        position_delta = -(call_delta + put_delta) * OPTION_MULTIPLIER * num_contracts
+                        position_gamma = -(call_greeks["gamma"] + put_greeks["gamma"]) * OPTION_MULTIPLIER * num_contracts
+                        shares_traded = target_shares  # 0 -> target, full hedge established
+                        active_contracts = num_contracts
 
                         state = dict(
                             entry_date=t, K=K, expiry_date=expiry_date,
@@ -189,9 +203,15 @@ def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
         else:
             T_t = max((state["expiry_date"] - t).days / 365.0, MIN_T_YEARS)
 
-            call_delta = compute_greeks(S_t, state["K"], T_t, r, sigma_t, "call")["delta"]
-            put_delta = compute_greeks(S_t, state["K"], T_t, r, sigma_t, "put")["delta"]
+            call_greeks = compute_greeks(S_t, state["K"], T_t, r, sigma_t, "call")
+            put_greeks = compute_greeks(S_t, state["K"], T_t, r, sigma_t, "put")
+            call_delta, put_delta = call_greeks["delta"], put_greeks["delta"]
             target_shares = (call_delta + put_delta) * OPTION_MULTIPLIER * state["num_contracts"]
+
+            position_delta = -(call_delta + put_delta) * OPTION_MULTIPLIER * state["num_contracts"]
+            position_gamma = -(call_greeks["gamma"] + put_greeks["gamma"]) * OPTION_MULTIPLIER * state["num_contracts"]
+            shares_traded = target_shares - state["shares_held"]
+            active_contracts = state["num_contracts"]
 
             hedge_pnl_today = state["shares_held"] * (S_t - state["S_prev"])
             state["cumulative_hedge_pnl"] += hedge_pnl_today
@@ -227,7 +247,11 @@ def run_backtest(df=None, capital_base=CAPITAL_BASE, r=RISK_FREE_RATE,
                 state = None
 
         equity += daily_pnl
-        daily_rows.append(dict(date=t, pnl=daily_pnl, equity=equity))
+        daily_rows.append(dict(
+            date=t, pnl=daily_pnl, equity=equity, spy=S_t,
+            position_delta=position_delta, position_gamma=position_gamma,
+            shares_traded=shares_traded, active_contracts=active_contracts,
+        ))
 
     # Force-close a trade still open at the end of the data (last available MTM).
     if state is not None:
