@@ -8,16 +8,28 @@ class PairsEngine:
     """Dollar-neutral mean-reversion engine for a single pair.
 
     Given two price series (asset A and asset B), this:
-      1. Estimates a rolling OLS hedge ratio (beta of A on B).
-      2. Builds the spread = price_A - hedge_ratio * price_B and its
-         rolling Z-score.
+      1. Estimates a rolling OLS hedge ratio (beta of A on B), optionally
+         on log prices, over cfg.HEDGE_RATIO_WINDOW.
+      2. Builds the spread = A - hedge_ratio * B (in the same, optionally
+         logged, price space) and its rolling Z-score over
+         cfg.ZSCORE_WINDOW -- a separate, shorter window than the hedge
+         ratio's so the entry/exit signal stays responsive while the
+         hedge estimate stays stable.
       3. Runs a stateful signal loop over the Z-score to decide when to
          enter/exit, freezing the hedge ratio at the moment of entry so
-         it is never re-estimated mid-trade.
+         it is never re-estimated mid-trade, and refusing to hold a
+         position for less than cfg.MIN_HOLDING_DAYS (avoids paying
+         entry+exit costs on trades that reverse within a few noisy days).
       4. Shifts signals by one day (trade on next bar, no look-ahead)
-         and converts the held position into dollar P&L, normalised by
-         the capital committed to the trade, net of transaction costs
-         charged only on entry and exit.
+         and converts the held position into P&L, net of transaction
+         costs charged only on entry and exit.
+
+    With cfg.USE_LOG_PRICES, steps 1-2 operate on log(A)/log(B): the
+    resulting spread and hedge ratio are in log-return space, so P&L is
+    already a normalised (unit-capital) return and no separate dollar
+    capital base is needed. With it off, P&L is a literal dollar P&L on
+    A - hedge_ratio * B, normalised by the dollar capital committed
+    (A + |hedge_ratio| * B).
     """
 
     def __init__(self, price_a, price_b, config, name=None):
@@ -48,10 +60,12 @@ class PairsEngine:
         n = len(zscore)
         z_vals = zscore.to_numpy()
         h_vals = hedge_ratio.to_numpy()
+        min_hold = getattr(cfg, "MIN_HOLDING_DAYS", 0)
 
         state = 0
         current_hedge = np.nan
         trade_counter = 0
+        days_in_trade = 0
 
         positions = np.zeros(n)
         hedge_used = np.full(n, np.nan)
@@ -72,13 +86,18 @@ class PairsEngine:
                             state = -1  # spread too high: short A, long B
                             current_hedge = h
                             trade_counter += 1
+                            days_in_trade = 0
                         elif z < -cfg.ENTRY_THRESHOLD:
                             state = 1  # spread too low: long A, short B
                             current_hedge = h
                             trade_counter += 1
-                elif abs(z) < cfg.EXIT_THRESHOLD:
-                    state = 0
-                    current_hedge = np.nan
+                            days_in_trade = 0
+                else:
+                    days_in_trade += 1
+                    if days_in_trade >= min_hold and abs(z) < cfg.EXIT_THRESHOLD:
+                        state = 0
+                        current_hedge = np.nan
+                        days_in_trade = 0
 
             positions[i] = state
             hedge_used[i] = current_hedge if state != 0 else np.nan
@@ -95,13 +114,16 @@ class PairsEngine:
 
     def run(self):
         cfg = self.config
-        window = cfg.ZSCORE_WINDOW
+        hedge_window = getattr(cfg, "HEDGE_RATIO_WINDOW", cfg.ZSCORE_WINDOW)
+        z_window = cfg.ZSCORE_WINDOW
+        use_log = getattr(cfg, "USE_LOG_PRICES", False)
 
         a, b = self.price_a.align(self.price_b, join="inner")
+        working_a, working_b = (np.log(a), np.log(b)) if use_log else (a, b)
 
-        hedge_ratio = self._rolling_hedge_ratio(a, b, window)
-        spread = a - hedge_ratio * b
-        zscore = self._zscore(spread, window)
+        hedge_ratio = self._rolling_hedge_ratio(working_a, working_b, hedge_window)
+        spread = working_a - hedge_ratio * working_b
+        zscore = self._zscore(spread, z_window)
 
         position_raw, hedge_used, trade_id = self._generate_positions(
             zscore, hedge_ratio, cfg
@@ -113,10 +135,16 @@ class PairsEngine:
         hedge_shifted = hedge_used.shift(1).ffill()
         trade_id_shifted = trade_id.shift(1)
 
-        delta_a = a.diff()
-        delta_b = b.diff()
+        delta_a = working_a.diff()
+        delta_b = working_b.diff()
 
-        capital_base = a.shift(1) + hedge_shifted.abs() * b.shift(1)
+        if use_log:
+            # Log-price deltas approximate simple returns, so the spread
+            # is already a normalised, unit-capital quantity.
+            capital_base = pd.Series(1.0, index=a.index)
+        else:
+            capital_base = a.shift(1) + hedge_shifted.abs() * b.shift(1)
+
         dollar_pnl = position * (delta_a - hedge_shifted * delta_b)
 
         # Transaction costs only when the held position actually changes
