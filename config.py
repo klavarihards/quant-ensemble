@@ -14,7 +14,40 @@ PAIRS = [
     ("IEF", "TLT"),
 ]
 
-TICKERS = sorted({ticker for pair in PAIRS for ticker in pair})
+# Expanded opportunity set: commodity, international, sector and fixed-
+# income pairs added to test whether more (and more diverse) pairs can
+# push combined Sharpe further. These are new and unvalidated, so they
+# run with a walk-forward cointegration pre-filter (only trade while a
+# monthly ADF test on the trailing spread shows p < 0.05) and a looser,
+# untuned entry/exit (2.5 / 1.0) rather than the 5-pair-validated 3.0 /
+# 0.25 -- see PAIR_OVERRIDES below.
+NEW_PAIRS = [
+    ("USO", "XLE"),   # oil price vs energy stocks
+    ("GLD", "SLV"),   # gold vs silver
+    ("DBA", "MOO"),   # agriculture commodities vs agriculture stocks
+    ("EFA", "EEM"),   # developed vs emerging markets
+    ("FXE", "FXB"),   # euro vs pound
+    ("XLK", "XLV"),   # technology vs healthcare
+    ("XLF", "XLU"),   # financials vs utilities
+    ("XLY", "XLP"),   # consumer discretionary vs staples
+    ("LQD", "HYG"),   # investment grade vs high yield bonds
+    ("TIP", "IEF"),   # inflation-protected vs nominal treasuries
+]
+
+ALL_PAIRS = PAIRS + NEW_PAIRS
+TICKERS = sorted({ticker for pair in ALL_PAIRS for ticker in pair})
+
+PAIR_OVERRIDES = {
+    pair: {
+        "ENTRY_THRESHOLD": 2.5,
+        "EXIT_THRESHOLD": 1.0,
+        "MIN_HOLDING_DAYS": 5,
+        "COINTEGRATION_GATE": True,
+        "COINTEGRATION_WINDOW": 252,
+        "COINTEGRATION_P_THRESHOLD": 0.05,
+    }
+    for pair in NEW_PAIRS
+}
 
 # --- Backtest window ----------------------------------------------------
 START_DATE = "2010-01-01"

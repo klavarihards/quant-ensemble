@@ -1,24 +1,51 @@
 """Run the pairs engine across the full universe of pairs."""
 
+import types
+
 import pandas as pd
 
 from backtest.metrics import compute_metrics
 from strategies.pairs_engine import PairsEngine
 
 
-def run_all_pairs(prices, config):
+def _effective_config(base_config, overrides):
+    """Build a per-pair config: base config's UPPERCASE attributes with
+    specific ones overridden, without mutating the shared base config."""
+    if not overrides:
+        return base_config
+    merged = types.SimpleNamespace(
+        **{key: getattr(base_config, key) for key in dir(base_config) if key.isupper()}
+    )
+    for key, value in overrides.items():
+        setattr(merged, key, value)
+    return merged
+
+
+def run_all_pairs(prices, config, pairs=None, pair_overrides=None):
     """Run PairsEngine on every configured pair.
+
+    pairs defaults to config.PAIRS; pair_overrides defaults to
+    config.PAIR_OVERRIDES (a {(A, B): {...}} dict of per-pair config
+    attribute overrides, e.g. a different entry/exit threshold or a
+    cointegration gate for newly added pairs that haven't been tuned
+    the same way as the core set).
 
     Returns a DataFrame of daily returns, one column per pair
     (named "A/B"), and prints a per-pair summary of trade count,
     win rate and Sharpe ratio.
     """
+    pairs = pairs if pairs is not None else config.PAIRS
+    pair_overrides = (
+        pair_overrides if pair_overrides is not None else getattr(config, "PAIR_OVERRIDES", {})
+    )
+
     returns = {}
     summaries = []
 
-    for asset_a, asset_b in config.PAIRS:
+    for asset_a, asset_b in pairs:
         name = f"{asset_a}/{asset_b}"
-        engine = PairsEngine(prices[asset_a], prices[asset_b], config, name=name)
+        pair_config = _effective_config(config, pair_overrides.get((asset_a, asset_b)))
+        engine = PairsEngine(prices[asset_a], prices[asset_b], pair_config, name=name)
         engine.run()
 
         returns[name] = engine.result["returns"]

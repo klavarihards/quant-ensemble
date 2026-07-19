@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+from statsmodels.tsa.stattools import adfuller
 
 
 class PairsEngine:
@@ -30,6 +31,15 @@ class PairsEngine:
     capital base is needed. With it off, P&L is a literal dollar P&L on
     A - hedge_ratio * B, normalised by the dollar capital committed
     (A + |hedge_ratio| * B).
+
+    With cfg.COINTEGRATION_GATE, a walk-forward cointegration filter is
+    added: once a month, an ADF test runs on the trailing
+    cfg.COINTEGRATION_WINDOW days of the spread (strictly prior data
+    only, no look-ahead), and new entries are only allowed while the
+    most recent test's p-value is below cfg.COINTEGRATION_P_THRESHOLD.
+    Existing trades still exit normally regardless of gate state -- the
+    gate only blocks opening new positions on a pair that currently
+    looks non-stationary.
     """
 
     def __init__(self, price_a, price_b, config, name=None):
@@ -55,11 +65,34 @@ class PairsEngine:
         std = spread.rolling(window).std()
         return (spread - mean) / std
 
-    def _generate_positions(self, zscore, hedge_ratio, cfg):
+    def _cointegration_gate(self, spread, window, p_threshold):
+        """Walk-forward monthly ADF gate: True while the pair currently
+        looks cointegrated, based only on data strictly before each test
+        date. Re-tested once a month; held constant in between."""
+        idx = spread.index
+        month_starts = set(spread.index.to_series().groupby(idx.to_period("M")).head(1))
+
+        gate = np.zeros(len(idx), dtype=bool)
+        last_ok = False
+        for i, dt in enumerate(idx):
+            if dt in month_starts:
+                hist = spread.iloc[:i].tail(window).dropna()
+                if len(hist) >= max(60, window // 2):
+                    try:
+                        p_value = adfuller(hist.to_numpy(), autolag="AIC")[1]
+                        last_ok = p_value < p_threshold
+                    except Exception:
+                        last_ok = False
+            gate[i] = last_ok
+
+        return pd.Series(gate, index=idx, name="coint_gate")
+
+    def _generate_positions(self, zscore, hedge_ratio, cfg, gate_ok=None):
         """Stateful loop: no look-ahead, hedge ratio fixed at entry."""
         n = len(zscore)
         z_vals = zscore.to_numpy()
         h_vals = hedge_ratio.to_numpy()
+        gate_vals = gate_ok.to_numpy() if gate_ok is not None else np.ones(n, dtype=bool)
         min_hold = getattr(cfg, "MIN_HOLDING_DAYS", 0)
 
         state = 0
@@ -81,7 +114,7 @@ class PairsEngine:
                     # look positively related over the lookback window),
                     # so there is no valid dollar-neutral trade to open
                     # today even if the z-score looks extreme.
-                    if not np.isnan(h) and h > 0:
+                    if not np.isnan(h) and h > 0 and gate_vals[i]:
                         if z > cfg.ENTRY_THRESHOLD:
                             state = -1  # spread too high: short A, long B
                             current_hedge = h
@@ -125,8 +158,15 @@ class PairsEngine:
         spread = working_a - hedge_ratio * working_b
         zscore = self._zscore(spread, z_window)
 
+        if getattr(cfg, "COINTEGRATION_GATE", False):
+            coint_window = getattr(cfg, "COINTEGRATION_WINDOW", 252)
+            coint_p_threshold = getattr(cfg, "COINTEGRATION_P_THRESHOLD", 0.05)
+            gate_ok = self._cointegration_gate(spread, coint_window, coint_p_threshold)
+        else:
+            gate_ok = pd.Series(True, index=spread.index)
+
         position_raw, hedge_used, trade_id = self._generate_positions(
-            zscore, hedge_ratio, cfg
+            zscore, hedge_ratio, cfg, gate_ok=gate_ok
         )
 
         # No look-ahead: today's held position/hedge/trade-id reflect
@@ -167,6 +207,7 @@ class PairsEngine:
                 "position_raw": position_raw,
                 "position": position,
                 "trade_id": trade_id_shifted,
+                "coint_gate": gate_ok,
                 "turnover": turnover,
                 "dollar_pnl": dollar_pnl,
                 "cost": cost,
