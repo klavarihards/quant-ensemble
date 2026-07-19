@@ -40,7 +40,21 @@ DTE_DAYS = 30                    # calendar days to expiry at entry
 CLOSE_DTE_DAYS = 5               # close this many calendar days before expiry
 STOP_LOSS_MULTIPLE = 2.0         # close if MTM loss > this multiple of premium collected
 VIX_ENTRY_MIN = 15.0             # skip the month if VIX <= this at entry
-MAX_LOSS_PCT_OF_CAPITAL = 0.05   # size so the 3-sigma scenario loss <= this fraction of capital
+
+# Swept max_loss_pct from 2%-100% of capital (see run_variant_comparison /
+# the PR history for the full table). Sharpe peaks at 12.5% (1.649
+# full-sample; checked on an independent 2004-2014/2015-2026 split too:
+# 1.991 / 1.372, so the peak isn't an artifact of one half of the data).
+# Below it, Sharpe rises with size as the strategy's edge scales up
+# faster than fixed frictions; above it, tail/gap risk from the stop-
+# loss and daily (not continuous) delta hedging starts to dominate and
+# Sharpe declines even though total return keeps rising -- e.g. 15%
+# gives almost the same Sharpe (1.614) for meaningfully more total
+# return (334% vs 243%), while 20%+ trades Sharpe away for return more
+# aggressively (1.491 at 20%, max drawdown -14.6% vs -8.4%). Total
+# return also plateaus above ~30-40% because MAX_CONTRACTS=20 becomes
+# the binding constraint in most months, not the risk budget itself.
+MAX_LOSS_PCT_OF_CAPITAL = 0.125  # size so the 3-sigma scenario loss <= this fraction of capital
 SIGMA_MULTIPLE = 3.0
 RISK_FREE_RATE = DEFAULT_RISK_FREE_RATE
 MIN_T_YEARS = 1.0 / 365.0        # floor to keep Black-Scholes well-defined
